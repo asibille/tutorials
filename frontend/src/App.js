@@ -6,7 +6,7 @@ function App() {
   const [title, setTitle] = useState('');
 
   const fetchTasks = async () => {
-    const res = await axios.get('http://localhost/api/tasks');
+    const res = await axios.get('http://localhost:5000/api/tasks');
     setTasks(res.data);
   };
 
@@ -15,7 +15,10 @@ function App() {
   }, []);
 
   const addTask = async () => {
-    await axios.post('http://localhost/api/tasks', { title });
+    await axios.post('http://localhost:5000/api/tasks', {
+      title
+    });
+
     setTitle('');
     fetchTasks();
   };
@@ -29,7 +32,9 @@ function App() {
         onChange={(e) => setTitle(e.target.value)}
       />
 
-      <button onClick={addTask}>Ajouter</button>
+      <button onClick={addTask}>
+        Ajouter
+      </button>
 
       <ul>
         {tasks.map((task) => (
