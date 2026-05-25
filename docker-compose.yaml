@@ -1,0 +1,106 @@
+version: '3.9'
+
+networks:
+  ansible_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+services:
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+  backend:
+    build: ./backend
+    ports:
+      - "5000:5000"
+    environment:
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: tasksdb
+    depends_on:
+      - db
+
+  db:
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: tasksdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  prometheus:
+    image: prom/prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+
+  grafana:
+    image: grafana/grafana
+    ports:
+      - "3001:3000"
+
+  ansible-controller:
+    build:
+      context: ./docker/ansible-controller
+    container_name: ansible-controller
+    hostname: ansible-controller
+    networks:
+      ansible_net:
+        ipv4_address: 172.20.0.10
+    volumes:
+      - ./ansible:/ansible
+      - ./terraform:/terraform
+      - ./inventory:/inventory
+    depends_on:
+      - ubuntu-node
+      - fedora-node
+      - redhat-node
+    command: tail -f /dev/null
+
+  ubuntu-node:
+    build:
+      context: ./docker/ubuntu-node
+    container_name: ubuntu-node
+    hostname: ubuntu-node
+    networks:
+      ansible_net:
+        ipv4_address: 172.20.0.21
+    command: /usr/sbin/sshd -D
+
+  fedora-node:
+    build:
+      context: ./docker/fedora-node
+    container_name: fedora-node
+    hostname: fedora-node
+    networks:
+      ansible_net:
+        ipv4_address: 172.20.0.22
+    command: /usr/sbin/sshd -D
+
+  redhat-node:
+    build:
+      context: ./docker/redhat-node
+    container_name: redhat-node
+    hostname: redhat-node
+    networks:
+      ansible_net:
+        ipv4_address: 172.20.0.23
+    command: /usr/sbin/sshd -D
+
+volumes:
+  postgres_data:

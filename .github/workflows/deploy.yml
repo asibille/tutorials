@@ -1,0 +1,239 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+env:
+  ANSIBLE_FORCE_COLOR: "1"
+  ANSIBLE_HOST_KEY_CHECKING: "False"
+
+jobs:
+
+  build:
+    name: "Build Application"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
+      - name: Install Backend
+        run: cd backend && npm install
+
+      - name: Install Frontend
+        run: cd frontend && npm install
+
+      - name: Docker Build app
+        run: docker compose build frontend backend db
+
+  build-infrastructure:
+    name: "Build Infrastructure Docker"
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Générer clé SSH RSA 4096
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
+          echo "SSH_PUB_KEY=$(cat ~/.ssh/id_rsa.pub)" >> $GITHUB_ENV
+
+      - name: Build images Docker nodes Ansible
+        run: |
+          docker compose build \
+            --build-arg SSH_PUB_KEY="${{ env.SSH_PUB_KEY }}" \
+            ansible-controller ubuntu-node fedora-node redhat-node
+
+      - name: Démarrer les containers
+        run: |
+          docker compose up -d ansible-controller ubuntu-node fedora-node redhat-node
+
+      - name: Logs des containers (debug)
+        run: |
+          sleep 5
+          echo "=== ubuntu-node ===" && docker logs ubuntu-node || true
+          echo "=== fedora-node ===" && docker logs fedora-node || true
+          echo "=== redhat-node ===" && docker logs redhat-node || true
+          docker compose ps
+
+      - name: Attendre sshd sur les noeuds
+        run: |
+          for node in ubuntu-node fedora-node redhat-node; do
+            echo "Attente sshd sur $node..."
+            for i in $(seq 1 30); do
+              if docker exec $node sh -c 'ss -tlnp 2>/dev/null | grep -q :22 || netstat -tlnp 2>/dev/null | grep -q :22'; then
+                echo "$node pret"
+                break
+              fi
+              echo "  tentative $i/30..."
+              sleep 3
+              if [ $i -eq 30 ]; then
+                echo "TIMEOUT $node - logs:"
+                docker logs $node
+                exit 1
+              fi
+            done
+          done
+
+      - name: Copier clé privée dans le controller
+        run: |
+          docker compose cp ~/.ssh/id_rsa ansible-controller:/root/.ssh/id_rsa
+          docker compose exec ansible-controller chmod 600 /root/.ssh/id_rsa
+
+      - name: Tester SSH depuis le controller
+        run: |
+          for ip in 172.20.0.21 172.20.0.22 172.20.0.23; do
+            docker compose exec ansible-controller \
+              ssh -i /root/.ssh/id_rsa \
+              -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=10 \
+              ansible@$ip 'hostname' && echo "$ip OK"
+          done
+
+      - name: Status containers
+        run: docker compose ps
+
+  terraform:
+    name: "Terraform — Inventaire"
+    runs-on: ubuntu-latest
+    needs: build-infrastructure
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Générer clé SSH + démarrer containers
+        run: |
+          ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
+          docker compose build \
+            --build-arg SSH_PUB_KEY="$(cat ~/.ssh/id_rsa.pub)" \
+            ansible-controller ubuntu-node fedora-node redhat-node
+          docker compose up -d ansible-controller ubuntu-node fedora-node redhat-node
+
+      - name: Attendre sshd sur les noeuds
+        run: |
+          for node in ubuntu-node fedora-node redhat-node; do
+            for i in $(seq 1 30); do
+              if docker exec $node sh -c 'ss -tlnp 2>/dev/null | grep -q :22 || netstat -tlnp 2>/dev/null | grep -q :22'; then
+                echo "$node pret"
+                break
+              fi
+              sleep 3
+              if [ $i -eq 30 ]; then docker logs $node; exit 1; fi
+            done
+          done
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+
+      - name: Terraform Validate
+        working-directory: terraform
+        run: terraform validate
+
+      - name: Terraform Plan
+        working-directory: terraform
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: terraform
+        run: terraform apply -auto-approve tfplan
+
+      - name: Afficher inventaire généré
+        run: cat inventory/hosts.ini
+
+      - name: Upload inventaire artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ansible-inventory
+          path: inventory/hosts.ini
+
+  ansible:
+    name: "Ansible — Automation"
+    runs-on: ubuntu-latest
+    needs: terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Générer clé SSH + démarrer containers
+        run: |
+          ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
+          docker compose build \
+            --build-arg SSH_PUB_KEY="$(cat ~/.ssh/id_rsa.pub)" \
+            ansible-controller ubuntu-node fedora-node redhat-node
+          docker compose up -d ansible-controller ubuntu-node fedora-node redhat-node
+
+      - name: Copier clé privée dans le controller
+        run: |
+          sleep 3
+          docker compose cp ~/.ssh/id_rsa ansible-controller:/root/.ssh/id_rsa
+          docker compose exec ansible-controller chmod 600 /root/.ssh/id_rsa
+
+      - name: Attendre sshd sur les noeuds
+        run: |
+          for node in ubuntu-node fedora-node redhat-node; do
+            for i in $(seq 1 30); do
+              if docker exec $node sh -c 'ss -tlnp 2>/dev/null | grep -q :22 || netstat -tlnp 2>/dev/null | grep -q :22'; then
+                echo "$node pret"
+                break
+              fi
+              sleep 3
+              if [ $i -eq 30 ]; then docker logs $node; exit 1; fi
+            done
+          done
+
+      - name: Télécharger inventaire Terraform
+        uses: actions/download-artifact@v4
+        with:
+          name: ansible-inventory
+          path: inventory/
+
+      - name: Copier inventaire dans le controller
+        run: docker compose cp inventory/hosts.ini ansible-controller:/inventory/hosts.ini
+
+      - name: Installer collection community.general
+        run: |
+          docker compose exec ansible-controller \
+            ansible-galaxy collection install community.general
+
+      - name: "STEP 1 — Gather facts controller"
+        run: |
+          docker compose exec ansible-controller \
+            ansible localhost -m gather_facts \
+            --inventory /inventory/hosts.ini \
+            -e "ansible_connection=local"
+
+      - name: "STEP 2 — Ping noeuds Linux"
+        run: |
+          docker compose exec ansible-controller \
+            ansible linux_nodes -m ping \
+            --inventory /inventory/hosts.ini
+
+      - name: "STEP 3 — Playbook timezone Paris puis Abidjan"
+        run: |
+          docker compose exec ansible-controller \
+            ansible-playbook /ansible/playbook.yaml \
+            --inventory /inventory/hosts.ini \
+            -v
+
+      - name: "STEP 4 — Verification finale timezones"
+        run: |
+          for c in ubuntu-node fedora-node redhat-node; do
+            printf "[%s] timezone: " "$c"
+            docker exec $c sh -c "cat /etc/timezone 2>/dev/null || timedatectl show --property=Timezone --value"
+          done
+
+      - name: Afficher facts controller
+        run: docker compose exec ansible-controller cat /tmp/controller_facts.txt || true
+
+      - name: Nettoyage
+        if: always()
+        run: docker compose down -v

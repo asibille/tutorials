@@ -1,0 +1,26 @@
+---
+- name: "Appliquer timezone {{ target_timezone }}"
+  community.general.timezone:
+    name: "{{ target_timezone }}"
+  become: true
+
+- name: Verifier le timezone
+  command: timedatectl show --property=Timezone --value
+  register: current_tz
+  changed_when: false
+
+- name: Asserter que le timezone est correct
+  assert:
+    that:
+      - current_tz.stdout == target_timezone
+    fail_msg: "ERREUR: attendu {{ target_timezone }}, obtenu {{ current_tz.stdout }}"
+    success_msg: "OK {{ inventory_hostname }} -> {{ current_tz.stdout }}"
+
+- name: Afficher date apres changement
+  command: date
+  register: date_out
+  changed_when: false
+
+- name: Resultat
+  debug:
+    msg: "{{ inventory_hostname }} | TZ: {{ current_tz.stdout }} | {{ date_out.stdout }}"

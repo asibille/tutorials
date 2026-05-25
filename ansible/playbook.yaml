@@ -1,0 +1,63 @@
+---
+# Playbook DevOps M1-DEV1 2026 - EFREI
+# 1. Gather facts sur le controller
+# 2. Set timezone Europe/Paris sur les noeuds Linux
+# 3. Switch timezone Africa/Abidjan (GMT)
+
+- name: "STEP 1 - Gather facts sur le controller"
+  hosts: controller
+  gather_facts: true
+  tasks:
+
+    - name: Hostname du controller
+      debug:
+        msg: "Hostname: {{ ansible_hostname }}"
+
+    - name: OS du controller
+      debug:
+        msg: "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+
+    - name: IPs du controller
+      debug:
+        msg: "IPs: {{ ansible_all_ipv4_addresses | join(', ') }}"
+
+    - name: Timezone actuel du controller
+      command: timedatectl show --property=Timezone --value
+      register: ctrl_tz
+      changed_when: false
+
+    - name: Afficher timezone controller
+      debug:
+        msg: "Timezone: {{ ctrl_tz.stdout }}"
+
+    - name: Sauvegarder les facts
+      copy:
+        content: |
+          === Ansible Controller Facts ===
+          Hostname     : {{ ansible_hostname }}
+          OS           : {{ ansible_distribution }} {{ ansible_distribution_version }}
+          Kernel       : {{ ansible_kernel }}
+          Architecture : {{ ansible_architecture }}
+          IPs          : {{ ansible_all_ipv4_addresses | join(', ') }}
+          RAM (MB)     : {{ ansible_memtotal_mb }}
+          CPUs         : {{ ansible_processor_vcpus }}
+          Timezone     : {{ ctrl_tz.stdout }}
+          Timestamp    : {{ ansible_date_time.iso8601 }}
+        dest: /tmp/controller_facts.txt
+      delegate_to: localhost
+
+- name: "STEP 2 - Timezone Europe/Paris sur les noeuds Linux"
+  hosts: linux_nodes
+  gather_facts: true
+  roles:
+    - role: timezone
+      vars:
+        target_timezone: "Europe/Paris"
+
+- name: "STEP 3 - Timezone Africa/Abidjan (GMT) sur les noeuds Linux"
+  hosts: linux_nodes
+  gather_facts: false
+  roles:
+    - role: timezone
+      vars:
+        target_timezone: "Africa/Abidjan"

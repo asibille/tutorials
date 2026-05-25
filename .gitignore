@@ -1,0 +1,10 @@
+node_modules/
+.terraform/
+terraform/.terraform/
+*.tfstate
+*.tfstate.backup
+.env
+build/
+dist/inventory/hosts.ini
+terraform/.terraform/
+terraform/tfplan
